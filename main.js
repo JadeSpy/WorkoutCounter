@@ -1,3 +1,4 @@
+
 console.log("main loading")
 
 function beep1(){
@@ -17,64 +18,68 @@ class TimingDevice{
         this.phaseStartTime = Date.now();
         this.timeAccumulator = 0;
         this.paused = paused;
-        this.runAts = new Array();
+        this.scheduledIntervals = new Map();
     }
     pause(){
         if(!this.paused){
             this.timeAccumulator+=Date.now()-this.phaseStartTime;
             this.paused = true;
-            this.stopRunAts();
         }
     }
     resume(){
         if(this.paused){
             this.paused = false;
             this.phaseStartTime= Date.now();
-            this.startRunAts();
         }
     }
-    startRunAts(){
-        if(this.hasScheduledRunAts===true){
-            throw "Called twice without a call to stopRunAts first";
-        }
-        this.hasScheduledRunAts = true;
-        this.runAts = this.runAts.map(function({f,endAt}){
-            let delay = endAt-this.getSeconds(false);
-            let id = setTimeout(f,delay*1000);
-            return ({f:f,endAt:endAt,id:id});
-            
-        }.bind(this));
-    }
-    stopRunAts(){
-        if(this.hasScheduledRunAts===false){
-            throw "Called twice without a call to startRunAts first";
-        }
-        this.hasScheduledRunAts = false;
-        this.runAts = this.runAts.map(function({f,endAt,id}){
-            if(endAt<this.getSeconds(false)){
-                return false;
+    async runInterval(id){
+        let errorToleranceLess = 2;//ms
+        while(true){
+            let x = this.scheduledIntervals.get(id);
+            if(x===undefined){
+                break;
             }
-            clearTimeout(id);
-            return {f:f,endAt:endAt};
-        }.bind(this)).filter((x)=>!(x===false));
-    }
-    runAfterDelay(f,delay){
-        let endAt = delay+this.getSeconds(false);
-        //inefficent, can improve by making startSingleRunAt
-        if(this.hasScheduledRunAts){
-            this.stopRunAts();
-            this.runAts.push({f:f,endAt:endAt});
-            this.startRunAts();
-        }
-        else{
-            this.runAts.push({f:f,endAt:endAt});
-            if(!this.paused){
-            this.startRunAts();
+            let now = this.getMilliseconds();
+            let relNow = now-x.offset;
+            let timeTillRun;
+            if(relNow<0){
+                timeTillRun = Math.abs(relNow)+x.delay-((now)%x.delay);
+            }
+            else{
+                timeTillRun = x.delay-((relNow)%x.delay);
+            }
+            let expectedToRunAt = now+timeTillRun;
+            while(true){
+                let now = this.getMilliseconds();
+                let relNow = now-x.offset;
+                if(relNow<0){
+                    timeTillRun = Math.abs(relNow)+x.delay-((now)%x.delay);
+                }
+                else{
+                    timeTillRun = x.delay-((relNow)%x.delay);
+                }
+                await new Promise(r => setTimeout(r, timeTillRun));
+                let offBy = expectedToRunAt-this.getMilliseconds();
+                if(offBy>errorToleranceLess){
+                    //console.log("Off by",offBy)
+                    continue;
+                }
+                x.f();
+                break;
+
             }
         }
     }
-    runAt(f,secondMark){
-        this.runAfterDelay(f,secondMark-this.getSeconds(false));
+
+    setInterval(f,delay,offset=0){
+        let x = {f:f,delay:delay,offset:offset};
+        let id = newId();
+        this.scheduledIntervals.set(id,x);
+        this.runInterval(id,x);
+        return id;
+    }
+    removeInterval(id){
+        this.scheduledIntervals.delete(id);
     }
     getTime(){
         if(this.paused){
@@ -107,7 +112,7 @@ class Timer{
         this.reset();
     }
     tickCountdown(){
-        console.log(this.timingDevice.getSeconds(false));
+        //console.log("tick countdown");
         if(this.running){
             let secondsIntoCycle = this.timingDevice.getSeconds(false) % (this.restDuration+this.workDuration);
             let phase = secondsIntoCycle<this.restDuration ? 'rest' : 'work';
@@ -118,19 +123,27 @@ class Timer{
             let secondsLeftInPhase = phaseLength-secondsIntoPhase;
             this.displayPhase(phase);
             secondsLeftInPhase = Math.round(secondsLeftInPhase);
+
+            
             if(secondsLeftInPhase<=numEffectsInPhase){
                 if(phase==='rest'){
-                    this.restCoundown(secondsLeftInPhase+1);
+                    this.restCoundown(secondsLeftInPhase);
                 }else{
-                    this.workCountdown(secondsLeftInPhase+1);
+                    this.workCountdown(secondsLeftInPhase);
+                }
+            }
+            else{
+                if(phase==='work' && secondsLeftInPhase==Math.floor(this.workDuration/2)){
+                    this.workCountdown(secondsLeftInPhase)
                 }
             }
         }
 
-        this.timingDevice.runAt(this.tickCountdown.bind(this),this.timingDevice.getSeconds()+1);
+        //this.timingDevice.runAt(this.tickCountdown.bind(this),this.timingDevice.getSeconds()+1);
         //this.timingDevice.runAt(this.tickCountdown.bind(this),this.timingDevice.getSeconds(true)+1); //run every second
     }
     tickClockface(){
+        //console.log("tick clock-face");
         //pasted lol
         if(this.running){
             let secondsIntoCycle = this.timingDevice.getSeconds(false) % (this.restDuration+this.workDuration);
@@ -141,15 +154,15 @@ class Timer{
             let secondsLeftInPhase = phaseLength-secondsIntoPhase;
             this.displayClockface(Math.floor(secondsLeftInPhase*100));
         }
-        this.timingDevice.runAt(this.tickClockface.bind(this),Math.floor((this.timingDevice.getMilliseconds()/10)+1)/100);//run every 100th of a second
+        //this.timingDevice.runAt(this.tickClockface.bind(this),Math.floor((this.timingDevice.getMilliseconds()/10)+1)/100);//run every 100th of a second
         
     }
     reset(){
         this.timingDevice = new TimingDevice();
         this.timingDevice.pause();
         this.running = false;
-        this.tickCountdown();
-        this.tickClockface();
+        this.timingDevice.setInterval(this.tickClockface.bind(this),10,10);
+        this.timingDevice.setInterval(this.tickCountdown.bind(this),1000,0);
         document.getElementById("reset").disabled = true;
         this.updateStopStart();
         this.displayClockface(0);
@@ -171,12 +184,19 @@ class Timer{
         this.showStatistics();
     }
     workCountdown(n){
-        console.log("beep1",n)
-        beep2();
+        if(n===1){
+        beep1();
+        }
+        else{beep2();}
     }
     restCoundown(n){
-        console.log("beep2",n);
-        beep1();
+        //console.log("here:",n)
+        if(n===1){
+        beep2();
+        }
+        else{
+            beep1();
+        }
     }
     displayPhase(phase){
         document.getElementById("phase-value").innerText = phase;
@@ -187,11 +207,11 @@ class Timer{
     get restDuration(){return this._restDuration;}
     set workDuration(val){
         this._workDuration= val;
-        this.workCountdownDuration = Math.min(5,Math.floor(this.workDuration/2));
+        this.workCountdownDuration = Math.min(4,Math.floor(this.workDuration));
     }
     set restDuration(val){
         this._restDuration= val;
-        this.restCountdownDuration = Math.min(3,Math.floor(this.workDuration/2));
+        this.restCountdownDuration = Math.min(4,Math.floor(this.workDuration));
     }
     updateStopStart(){
         let button = document.getElementById("start-stop");
@@ -234,7 +254,6 @@ document.getElementById("work").oninput = (e)=>{
 document.getElementById("rest").onchange = (e)=>{
     timer.restDuration = parseInt(e.target.value)
 };
-
 
 
 
